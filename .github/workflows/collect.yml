@@ -1,0 +1,130 @@
+name: Collect
+
+on:
+  schedule:
+    # every 15 minutes from 6:07 AM to 11:52 PM Toronto time (GitHub uses UTC: 11:00-04:59 UTC in winter).
+    # When daylight saving starts in March, change "11-23,0-4" to "10-23,0-3" to keep the 6 AM start.
+    - cron: "7,22,37,52 11-23,0-4 * * *"
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Only save the current state (no collecting, no drafts)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Start date check
+        id: gate
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$(date -u +%Y%m%d%H)" \< "2026112111" ]; then
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.go == 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.go == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Load saved state (encrypted, private to the workflows)
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: state.enc
+          key: state-${{ github.run_id }}
+          restore-keys: state-
+
+      - name: Check settings
+        if: steps.gate.outputs.go == 'true'
+        env:
+          AMAZON_TAG: ${{ secrets.AMAZON_TAG }}
+        run: |
+          if [ -z "$AMAZON_TAG" ]; then echo "::error::AMAZON_TAG secret is missing"; exit 1; fi
+          echo "settings ok"
+      - name: Unpack state
+        if: steps.gate.outputs.go == 'true'
+        env:
+          STATE_KEY: ${{ secrets.BUFFER_API_KEY }}
+        run: |
+          if [ -f state.enc ]; then
+            rm -rf data && openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:STATE_KEY -in state.enc | tar -xz
+          fi
+          mkdir -p data
+          echo "state files: $(ls data | wc -l)"
+
+      - name: Collect
+        if: steps.gate.outputs.go == 'true' && !inputs.seed
+        env:
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          AMAZON_TAG: ${{ secrets.AMAZON_TAG }}
+        run: python scripts/collect.py
+
+      - name: Pictures
+        if: steps.gate.outputs.go == 'true' && !inputs.seed
+        env:
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          AMAZON_TAG: ${{ secrets.AMAZON_TAG }}
+        run: |
+          pip install --quiet -r requirements.txt || true
+          python scripts/snap.py || echo "picture step failed; continuing"
+
+      - name: Publish pictures (images branch, last 7 days only)
+        if: steps.gate.outputs.go == 'true' && !inputs.seed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -d shots ] && [ -n "$(ls -A shots 2>/dev/null)" ]; then
+            mkdir -p /tmp/img
+            if git fetch -q origin images 2>/dev/null; then git archive FETCH_HEAD | tar -x -C /tmp/img; fi
+            cp shots/* /tmp/img/
+            cutoff=$(date -u -d '7 days ago' +%Y%m%d)
+            for f in /tmp/img/*.jpg; do d=$(basename "$f" | cut -c1-8); if [ "$d" \< "$cutoff" ]; then rm -f "$f"; fi; done
+            cd /tmp/img
+            git init -q && git checkout -q -b images && git add -A
+            git -c user.name="notes-bot" -c user.email="notes-bot@users.noreply.github.com" commit -qm "pictures"
+            git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" images
+            sleep 5
+          fi
+
+      - name: Drafts
+        if: steps.gate.outputs.go == 'true' && !inputs.seed
+        env:
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          AMAZON_TAG: ${{ secrets.AMAZON_TAG }}
+        run: python scripts/push_buffer.py
+
+      - name: Re-check posts due soon
+        if: steps.gate.outputs.go == 'true' && !inputs.seed
+        env:
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          AMAZON_TAG: ${{ secrets.AMAZON_TAG }}
+        run: python scripts/verify_scheduled.py
+
+      - name: Pack state
+        if: always() && steps.gate.outputs.go == 'true'
+        env:
+          STATE_KEY: ${{ secrets.BUFFER_API_KEY }}
+        run: tar -cz data | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:STATE_KEY -out state.enc
+
+      - name: Save state
+        if: always() && steps.gate.outputs.go == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: state.enc
+          key: state-${{ github.run_id }}-${{ github.run_attempt }}

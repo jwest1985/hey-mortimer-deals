@@ -1,0 +1,5 @@
+data/
+shots/
+state.enc
+__pycache__/
+*.pyc

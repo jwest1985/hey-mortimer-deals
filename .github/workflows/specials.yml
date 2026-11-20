@@ -1,0 +1,112 @@
+name: Specials
+
+on:
+  schedule:
+    - cron: "7 17 * * 4"   # Thursdays 12:07 PM Toronto: free games (draft only)
+    # evening round-up is off; to turn it on, remove the # below
+    # - cron: "7 2 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "free or roundup"
+        required: true
+        default: "free"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Pick the post and check the start date
+        id: gate
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then mode="${{ inputs.mode }}"
+          elif [ "${{ github.event.schedule }}" = "7 17 * * 4" ]; then mode=free; else mode=roundup; fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$(date -u +%Y%m%d%H)" \< "2026112111" ]; then
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.go == 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.go == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Load saved state (encrypted, private to the workflows)
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: state.enc
+          key: state-${{ github.run_id }}
+          restore-keys: state-
+
+      - name: Unpack state
+        if: steps.gate.outputs.go == 'true'
+        env:
+          STATE_KEY: ${{ secrets.BUFFER_API_KEY }}
+        run: |
+          if [ -f state.enc ]; then
+            rm -rf data && openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:STATE_KEY -in state.enc | tar -xz
+          fi
+          mkdir -p data
+          echo "state files: $(ls data | wc -l)"
+
+      - name: Make the draft
+        if: steps.gate.outputs.go == 'true'
+        env:
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          AMAZON_TAG: ${{ secrets.AMAZON_TAG }}
+        run: |
+          pip install --quiet pillow
+          python scripts/specials.py ${{ steps.gate.outputs.mode }}
+
+      - name: Publish pictures (images branch, last 7 days only)
+        if: steps.gate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -d shots ] && [ -n "$(ls -A shots 2>/dev/null)" ]; then
+            mkdir -p /tmp/img
+            if git fetch -q origin images 2>/dev/null; then git archive FETCH_HEAD | tar -x -C /tmp/img; fi
+            cp shots/* /tmp/img/
+            cutoff=$(date -u -d '7 days ago' +%Y%m%d)
+            for f in /tmp/img/*.jpg; do d=$(basename "$f" | cut -c1-8); if [ "$d" \< "$cutoff" ]; then rm -f "$f"; fi; done
+            cd /tmp/img
+            git init -q && git checkout -q -b images && git add -A
+            git -c user.name="notes-bot" -c user.email="notes-bot@users.noreply.github.com" commit -qm "pictures"
+            git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" images
+            sleep 5
+          fi
+
+      - name: Send the draft
+        if: steps.gate.outputs.go == 'true'
+        env:
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          AMAZON_TAG: ${{ secrets.AMAZON_TAG }}
+        run: python scripts/specials.py send
+
+      - name: Pack state
+        if: always() && steps.gate.outputs.go == 'true'
+        env:
+          STATE_KEY: ${{ secrets.BUFFER_API_KEY }}
+        run: tar -cz data | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:STATE_KEY -out state.enc
+
+      - name: Save state
+        if: always() && steps.gate.outputs.go == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: state.enc
+          key: state-${{ github.run_id }}-${{ github.run_attempt }}

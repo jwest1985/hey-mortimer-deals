@@ -1,0 +1,75 @@
+name: Report
+
+on:
+  schedule:
+    # 11:45 PM Toronto (04:45 UTC in winter; becomes 12:45 AM in summer time)
+    - cron: "45 4 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Start date check
+        id: gate
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$(date -u +%Y%m%d%H)" \< "2026112111" ]; then
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.go == 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.go == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Load saved state (encrypted, private to the workflows)
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: state.enc
+          key: state-${{ github.run_id }}
+          restore-keys: state-
+
+      - name: Unpack state
+        if: steps.gate.outputs.go == 'true'
+        env:
+          STATE_KEY: ${{ secrets.BUFFER_API_KEY }}
+        run: |
+          if [ -f state.enc ]; then
+            rm -rf data && openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:STATE_KEY -in state.enc | tar -xz
+          fi
+          mkdir -p data
+          echo "state files: $(ls data | wc -l)"
+
+      - name: Make the report
+        if: steps.gate.outputs.go == 'true'
+        env:
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          AMAZON_TAG: ${{ secrets.AMAZON_TAG }}
+        run: |
+          pip install --quiet -r requirements.txt
+          python scripts/daily_report.py
+
+      - name: Publish the report (notes branch, latest only)
+        if: steps.gate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/notes && cp data/daily_report.json /tmp/notes/report.json && cd /tmp/notes
+          git init -q && git checkout -q -b notes && git add -A
+          git -c user.name="notes-bot" -c user.email="notes-bot@users.noreply.github.com" commit -qm "notes"
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" notes
