@@ -516,14 +516,15 @@ def items_from_keystores(feed):
 
 
 PLATFORMS = [(r"playstation 5|\bps5\b", "PS5"), (r"playstation 4|\bps4\b", "PS4"), (r"nintendo switch 2|switch 2", "Switch 2"),
-             (r"nintendo switch|\bswitch\b", "Switch"), (r"xbox series x\|s|xbox series x|xbox series", "Xbox Series X"),
+             (r"nintendo switch|\bswitch\b", "Switch"), (r"xbox series x\s*\|\s*s|xbox series x/s", "Xbox Series X|S"), (r"xbox series x|xbox series", "Xbox Series X"),
              (r"xbox one", "Xbox One")]
 
 
 def clean_item(item, store):
     """Tidy a product name for a post: no "[Prime]"-style labels, no raw Amazon keyword titles, no ALL CAPS."""
     item = re.sub(r"^\s*(?:\[[^\]]{1,20}\]\s*)+", "", item).strip()
-    if store == "Amazon" and (" | " in item or len(item) > 90):
+    if store == "Amazon" and (" | " in item or len(item) > 90 or
+                              re.search(r" - (?:PlayStation|Nintendo|Xbox|PS[45])|\[Digital (?:Code|Download)\]", item, re.I)):
         item = shorten_title(item)
     letters = re.sub(r"[^A-Za-z]", "", item)
     if len(letters) > 3 and letters.isupper():
@@ -539,7 +540,8 @@ def shorten_title(t, limit=90):
         return t if len(t) <= limit + 30 else t[:limit + 30].rsplit(" ", 1)[0].rstrip(",-")
     parts = re.split(r" [-\u2013\u2014|] |, | \((?=[^)]*(?:pack|count|edition|version|bundle)\b)", t, maxsplit=1)
     name = parts[0].strip(" -,")
-    if len(name.split()) < 2 and len(parts) > 1:  # too short to be useful: keep a bit more
+    if len(name.split()) < 2 and len(parts) > 1 and not any(re.search(pat, t[len(name):], re.I) for pat, _ in PLATFORMS):
+        # too short to be useful (and not just "Game - Platform"): keep a bit more
         name = t
     rest = t[len(name):]
     digital = bool(re.search(r"digital (?:code|download)|\[digital", rest, re.I))
