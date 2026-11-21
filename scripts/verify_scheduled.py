@@ -377,6 +377,24 @@ def main():
         did = post_to_deal.get(pid)
         if did and when and NOW - timedelta(minutes=2) <= when <= NOW + WINDOW:
             due.setdefault(did, []).append(pid)
+    # an Amazon post must never go out without your amzn.to link (the long link has no tracking ID)
+    for pid, node in scheduled.items():
+        when = collect.parse_date(node.get("dueAt"))
+        text = node.get("text") or ""
+        if when and when <= NOW + WINDOW and re.search(r"https?://(?:www\.)?amazon\.com/", text) and "amzn.to/" not in text:
+            tag_ids = list(dict.fromkeys([t["id"] for t in node.get("tags") or []] + [TAGS["Swap Amazon link"]]))
+            try:
+                pb.gql(key, EDIT, {"input": {"id": pid, "saveToDraft": True, "tagIds": tag_ids}})
+                print("verify: HOLD Amazon post without the amzn.to link, moved back to Drafts:", pid)
+            except Exception as e:
+                print("   couldn't move", pid, str(e)[:150])
+            for did, pids in list(due.items()):
+                if pid in pids:
+                    pids.remove(pid)
+                    if not pids:
+                        due.pop(did)
+            attention.append({"at": NOW.isoformat(timespec="seconds"), "deal": pid, "tag": "Swap Amazon link",
+                              "reason": "scheduled without the amzn.to link", "item": text[:60], "store": "Amazon"})
     if not due:
         print("verify: no deal posts due in the next", int(WINDOW.total_seconds() // 60), "minutes")
 

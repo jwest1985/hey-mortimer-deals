@@ -202,7 +202,7 @@ def is_amazon(host):
 
 
 def clean_link(url, amazon_tag):
-    """Remove other people's affiliate/tracking parameters; add ours on Amazon.
+    """Remove other people's affiliate/tracking parameters (Amazon links stay untagged until the amzn.to swap).
 
     Returns (url, is_affiliate)."""
     if not url:
@@ -225,10 +225,9 @@ def clean_link(url, amazon_tag):
         else:
             q = [(k, v) for k, v in urllib.parse.parse_qsl(p.query) if k.lower() not in STRIP_PARAMS]
             clean = urllib.parse.urlunparse((p.scheme or "https", p.netloc, p.path, "", urllib.parse.urlencode(q), ""))
-        if amazon_tag:
-            sep = "&" if "?" in clean else "?"
-            return f"{clean}{sep}tag={amazon_tag}", True
-        return clean, False
+        # no tracking ID in drafts: your own clicks (to make the amzn.to link) don't count in your Associates stats.
+        # It's still an affiliate post (#ad), because the amzn.to link you swap in carries your tag.
+        return clean, True
     strip = STRIP_PARAMS | ({"id", "skuid", "intl"} if host.endswith("bestbuy.com") else set())
     q = [(k, v) for k, v in urllib.parse.parse_qsl(p.query, keep_blank_values=True) if k.lower() not in strip]
     clean = urllib.parse.urlunparse((p.scheme, p.netloc, p.path, "", urllib.parse.urlencode(q), ""))
