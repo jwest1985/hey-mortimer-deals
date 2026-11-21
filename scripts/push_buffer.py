@@ -5,6 +5,7 @@ Nothing is published: every post is saved with saveToDraft=true for manual revie
 The key is never printed or written to the repo (the repo and its logs are public).
 """
 import json
+import re
 import os
 import sys
 import time
@@ -212,6 +213,8 @@ def main():
             continue
         if d.get("kind") == "deal" and "picture" not in d:
             continue  # wait until the picture step has handled it
+        if d.get("kind") == "deal" and len(re.sub(r"[^A-Za-z0-9]", "", d.get("item") or "")) < 3:
+            d["skip"] = "no product name"
         if d.get("skip"):
             sent[d["id"]] = {"at": NOW.isoformat(timespec="seconds"), "skipped": d["skip"]}
             continue

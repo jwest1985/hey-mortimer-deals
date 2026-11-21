@@ -392,6 +392,7 @@ def deal_from_slickdeals(it):
     item = re.sub(r"\s*(?:\+\s*)?(?:w/|with|use|using)?\s*(?:promo |coupon )?code[:\s]+[A-Z0-9-]+.*$", "", item, flags=re.I)
     item = re.sub(r"^(?:prime members?|[\w' ]{0,20} members?|in-store)\s*:\s*", "", item.strip(), flags=re.I)
     price = price.strip().rstrip(",.") if price else price  # "$8, on Amazon" -> 8
+    item = re.sub(r"\s+(?:from|for|at|only|just|starting at|as low as|now)$", "", item.strip(" -–:"), flags=re.I)
     return {"item": item.strip(" -–:"), "price": price, "store": (store or "").strip(), "note": note_extra, "url": url,
             "search_link": search, "image": img.group(1) if img else "", "multi": multi, "third_party": third_party,
             "code": code, "creator_code": creator_code, "ship": ship}
@@ -581,7 +582,7 @@ def items_from_camel(feed):
                 continue
             price, name = pm.group(1), title
         image = ""
-        if walmart or name.endswith("...") or "..." in name:
+        if walmart or not name.strip() or "..." in name:
             try:  # full name (the drop feed cuts names off) and, for Walmart, the product photo
                 site = "camelmart.com" if walmart else "camelcamelcamel.com"
                 page = fetch(f"https://{site}/product/{asin}", ua=APP_UA)
@@ -596,6 +597,8 @@ def items_from_camel(feed):
             if not name:
                 continue
         name = shorten_title(name)
+        if len(re.sub(r"[^A-Za-z0-9]", "", name)) < 3:
+            continue  # no usable product name: never post a nameless deal
         if walmart:
             name = re.sub(r",\s*\d{10,14}$", "", name)  # trailing UPC codes in Walmart titles
             url = f"https://www.walmart.com/ip/{asin}"
